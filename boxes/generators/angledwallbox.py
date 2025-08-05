@@ -75,33 +75,13 @@ class AngledWallBox(Boxes):
         self.move(tx, ty, move, label=label)
 
     def trapezoidalWall(self, bottom_width, top_width, height, edges="eeee", move=None, label=""):
-        """Create a trapezoidal wall with different bottom and top widths
-        For finger joints, use the average width to ensure consistent joint spacing"""
-
-        # For finger joints, use a consistent width based on the top width
-        # This ensures proper alignment with lids
-        avg_width = top_width  # Use top width for finger joint calculations
+        """Create a trapezoidal wall with different bottom and top widths"""
 
         # Calculate the angle for the sloped sides
         width_diff = (top_width - bottom_width) / 2
         slope_length = math.sqrt(height**2 + width_diff**2)
 
-        # Process edges, but for finger joints use the average width
-        processed_edges = []
-        for i, e in enumerate(edges):
-            edge_obj = self.edges.get(e, e)
-            if hasattr(edge_obj, '__class__') and 'finger' in edge_obj.__class__.__name__.lower():
-                # For finger joints, create a version that uses consistent spacing
-                if i == 0 or i == 2:  # top and bottom edges
-                    # Use the appropriate width for finger joint calculation
-                    width_to_use = avg_width if i == 2 else bottom_width
-                    processed_edges.append(edge_obj)
-                else:
-                    processed_edges.append(edge_obj)
-            else:
-                processed_edges.append(edge_obj)
-
-        edges = processed_edges
+        edges = [self.edges.get(e, e) for e in edges]
 
         # Calculate total dimensions including edge spacing
         tw = max(bottom_width, top_width) + edges[1].spacing() + edges[3].spacing() + abs(width_diff)
@@ -110,19 +90,19 @@ class AngledWallBox(Boxes):
         if self.move(tw, th, move, before=True):
             return
 
-        # Start drawing the trapezoid - position it so the bottom edge is aligned properly
+        # Start drawing the trapezoid
         start_x = edges[3].margin() + (abs(width_diff) if top_width > bottom_width else 0)
         self.moveTo(start_x, edges[0].margin())
 
         # Bottom edge (connects to the floor)
         edges[0](bottom_width)
 
-        # Right sloped edge - calculate angle correctly for outward slope
+        # Right sloped edge
         angle = math.degrees(math.atan2(width_diff, height))
         self.corner(90 - angle)
         edges[1](slope_length)
 
-        # Top edge (wider for bowl shape) - this should match the lid
+        # Top edge - use actual top width so finger joints match the lid
         self.corner(90 + angle)
         edges[2](top_width)
 
@@ -136,16 +116,17 @@ class AngledWallBox(Boxes):
         self.move(tw, th, move, label=label)
 
     def topFloor(self, x, y, n, edge='e', hole=None, move=None, callback=None, label=""):
-        """Top floor adjusted for angled walls"""
+        """Top floor adjusted for angled walls - using properly expanded polygon"""
         # Calculate the top dimensions based on wall slope
         slope_rad = math.radians(self.wall_slope)
         top_expansion = self.h * math.tan(slope_rad)
 
-        # Adjust dimensions for the expanded top
+        # Calculate expanded dimensions for the polygon
         top_x = x + 2 * top_expansion
         top_y = y + 2 * top_expansion
 
-        r, h, side = self.regularPolygon(2*n+2, h=(top_y)/2.0)
+        # Calculate polygon based on EXPANDED dimensions - this is key!
+        r, h, side = self.regularPolygon(2*n+2, h=top_y/2.0)
         t = self.thickness
 
         if n % 2:
@@ -161,11 +142,13 @@ class AngledWallBox(Boxes):
         if self.move(tx, ty, move, before=True):
             return
 
+        # Calculate starting position
         self.moveTo((tx-lx)/2., edge.margin())
 
         if hole:
             with self.saved_context():
-                hr, hh, hside = self.regularPolygon(2*n+2, h=(top_y)/2.0-t)
+                # For the hole, calculate based on expanded dimensions minus thickness
+                hr, hh, hside = self.regularPolygon(2*n+2, h=top_y/2.0-t)
                 dx = side - hside
                 hlx = lx - dx
 
@@ -174,9 +157,10 @@ class AngledWallBox(Boxes):
                     self.edge(l)
                     self.corner(360.0/(2*n + 2))
 
+        # Draw the polygon with properly calculated edges for expanded dimensions
         for i, l in enumerate(([lx] + ([side] * n))* 2):
             self.cc(callback, i, 0, edge.startwidth() + self.burn)
-            edge(l)
+            edge(l)  # Using correctly calculated edge lengths
             self.edgeCorner(edge, edge, 360.0/(2*n + 2))
 
         self.move(tx, ty, move, label=label)
@@ -212,11 +196,19 @@ class AngledWallBox(Boxes):
         else:
             lx = x - 2 * r + side
 
-        # Calculate finger joint settings based on the TOP dimensions (for lid compatibility)
+        # Calculate angled wall dimensions
         slope_rad = math.radians(wall_slope)
         top_expansion = h * math.tan(slope_rad)
-        top_lx = lx + 2 * top_expansion
-        top_side = side + 2 * top_expansion
+
+        # Calculate the expanded polygon dimensions to get correct edge lengths
+        top_x = x + 2 * top_expansion
+        top_y = y + 2 * top_expansion
+        r_top, hp_top, side_top = self.regularPolygon(2*n+2, h=top_y/2.0)
+
+        if n % 2:
+            lx_top = top_x - 2 * hp_top + side_top
+        else:
+            lx_top = top_x - 2 * r_top + side_top
 
         fingerJointSettings = copy.deepcopy(self.edges["f"].settings)
         fingerJointSettings.setValues(self.thickness, angle=360./(2 * (n+1)))
@@ -241,36 +233,37 @@ class AngledWallBox(Boxes):
 
         fingers = self.top in ("angled lid2", "angled hole")
 
+        # Start a new row for walls to prevent overlap
+        self.ctx.save()
+
         cnt = 0
         for j in range(2):
             cnt += 1
             if j == 0 or n % 2:
-                # Calculate the trapezoidal wall dimensions for the main walls
-                bottom_lx = lx
-                top_lx = lx + 2 * top_expansion  # Top is wider for bowl shape
-                self.trapezoidalWall(bottom_lx, top_lx, h,
+                # Use the properly calculated top dimensions from expanded polygon
+                self.trapezoidalWall(lx, lx_top, h,
                                    edges=b+"GfG" if fingers else b+"GeG",
                                    move="right", label=f"angled wall {cnt}")
             else:
-                bottom_lx = lx
-                top_lx = lx + 2 * top_expansion  # Top is wider for bowl shape
-                self.trapezoidalWall(bottom_lx, top_lx, h,
+                self.trapezoidalWall(lx, lx_top, h,
                                    edges=b+"gfg" if fingers else b+"geg",
                                    move="right", label=f"angled wall {cnt}")
             for i in range(n):
                 cnt += 1
-                # Calculate the trapezoidal wall dimensions for the side walls
-                bottom_side = side
-                top_side = side + 2 * top_expansion  # Top is wider for bowl shape
+                # Use properly calculated side dimensions from expanded polygon
                 if (i+j*((n+1)%2)) % 2: # reverse for second half if even n
-                    self.trapezoidalWall(bottom_side, top_side, h,
+                    self.trapezoidalWall(side, side_top, h,
                                        edges=b+"GfG" if fingers else b+"GeG",
                                        move="right", label=f"angled wall {cnt}")
                 else:
-                    self.trapezoidalWall(bottom_side, top_side, h,
+                    self.trapezoidalWall(side, side_top, h,
                                        edges=b+"gfg" if fingers else b+"geg",
                                        move="right", label=f"angled wall {cnt}")
 
+        self.ctx.restore()
+
         # When top is "none", draw the bottom piece after all the walls to avoid overlap
         if self.top == "none" and b != "e":
+            # Move to a new row for the bottom
+            self.move(0, h + 20, "up only")  # Move up to clear the walls
             self.floor(x, y, n, edge='f', move="right", label="Bottom")
